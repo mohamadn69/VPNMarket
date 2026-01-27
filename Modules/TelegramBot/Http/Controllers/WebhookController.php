@@ -2659,13 +2659,20 @@ class WebhookController extends Controller
 
     protected function getReplyMainMenu(): Keyboard
     {
+        $webAppUrl = route('webapp.index');
+
         return Keyboard::make([
             'keyboard' => [
+                [
+                    [
+                        'text' => '📱 مدیریت حساب (Mini App)',
+                        'web_app' => ['url' => $webAppUrl]
+                    ]
+                ],
                 ['🛒 خرید سرویس', '🛠 سرویس‌های من'],
                 ['💰 کیف پول', '📜 تاریخچه تراکنش‌ها'],
                 ['💬 پشتیبانی', '🎁 دعوت از دوستان'],
                 ['📚 راهنمای اتصال', '🧪 اکانت تست'],
-
             ],
             'resize_keyboard' => true,
             'one_time_keyboard' => false

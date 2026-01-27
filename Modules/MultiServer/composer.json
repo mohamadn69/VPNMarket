@@ -1,0 +1,30 @@
+{
+    "name": "nwidart/multiserver",
+    "description": "",
+    "authors": [
+        {
+            "name": "Nicolas Widart",
+            "email": "n.widart@gmail.com"
+        }
+    ],
+    "extra": {
+        "laravel": {
+            "providers": [],
+            "aliases": {
+
+            }
+        }
+    },
+    "autoload": {
+        "psr-4": {
+            "Modules\\MultiServer\\": "app",
+            "Modules\\MultiServer\\Database\\Factories\\": "database/factories/",
+            "Modules\\MultiServer\\Database\\Seeders\\": "database/seeders/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Modules\\MultiServer\\Tests\\": "tests/"
+        }
+    }
+}

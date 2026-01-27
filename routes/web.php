@@ -45,6 +45,12 @@ Route::get('/', function () {
 })->name('home');
 
 
+Route::prefix('webapp')->middleware('web')->group(function () {
+    Route::get('/', [WebAppController::class, 'index'])->name('webapp.index');
+    Route::get('/plans', [WebAppController::class, 'plans'])->name('webapp.plans');
+    Route::get('/order/{id}', [WebAppController::class, 'orderDetail'])->name('webapp.order');
+});
+
 Route::middleware(['auth'])->group(function () {
 
 
