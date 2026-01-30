@@ -32,13 +32,23 @@ class XUIService
         $this->cookieJar = new CookieJar();
     }
 
+//    private function getClient(): PendingRequest
+//    {
+//        return Http::withOptions([
+//            'cookies' => $this->cookieJar,
+//            'verify' => false,
+//            'timeout' => 30,
+//        ]);
+//    }
+
     private function getClient(): PendingRequest
     {
         return Http::withOptions([
             'cookies' => $this->cookieJar,
             'verify' => false,
-            'timeout' => 30,
-        ]);
+            'timeout' => 120,
+            'connect_timeout' => 60,
+        ])->withoutVerifying();
     }
 
     public function getClients(int $inboundId): array

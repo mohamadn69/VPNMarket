@@ -93,18 +93,15 @@ class ServerResource extends Resource
                                     ->label('انتخاب از لیست')
                                     ->color('primary')
                                     ->modalHeading('لیست اینباندهای موجود در سرور')
-                                    ->modalSubmitActionLabel('تایید و انتخاب') // دکمه تایید اضافه شد
+                                    ->modalSubmitActionLabel('تایید و انتخاب')
                                     ->form(function (Forms\Get $get) {
-                                        // 1. تمیزکاری آدرس (حذف http/https)
                                         $rawIp = $get('ip_address');
                                         $cleanIp = str_replace(['http://', 'https://', '/'], '', $rawIp);
 
-                                        // 2. ساخت آدرس اتصال
                                         $protocol = $get('is_https') ? 'https' : 'http';
                                         $port = $get('port');
                                         $path = $get('path');
 
-                                        // اطمینان از فرمت درست آدرس
                                         $host = "{$protocol}://{$cleanIp}:{$port}{$path}";
 
                                         $user = $get('username');
@@ -119,7 +116,6 @@ class ServerResource extends Resource
                                         }
 
                                         try {
-                                            // 3. اتصال به سرور
                                             $xui = new \App\Services\XUIService($host, $user, $pass);
                                             if (!$xui->login()) {
                                                 throw new \Exception('اتصال به پنل ناموفق بود. نام کاربری یا رمز عبور اشتباه است.');
@@ -130,7 +126,6 @@ class ServerResource extends Resource
                                                 throw new \Exception('هیچ اینباندی در این سرور یافت نشد.');
                                             }
 
-                                            // 4. آماده‌سازی گزینه‌ها برای نمایش
                                             $options = [];
                                             foreach ($inbounds as $inbound) {
                                                 $id = $inbound['id'];
@@ -138,7 +133,6 @@ class ServerResource extends Resource
                                                 $protocol = strtoupper($inbound['protocol'] ?? 'UNKNOWN');
                                                 $port = $inbound['port'] ?? '?';
 
-                                                // نمایش اطلاعات کامل در لیست
                                                 $options[$id] = "ID: {$id}  |  {$remark}  |  {$protocol} : {$port}";
                                             }
 
@@ -147,7 +141,7 @@ class ServerResource extends Resource
                                                     ->label('یکی از اینباندها را انتخاب کنید:')
                                                     ->options($options)
                                                     ->required()
-                                                    ->columns(1) // نمایش خطی و مرتب
+                                                    ->columns(1)
                                             ];
 
                                         } catch (\Exception $e) {
@@ -159,7 +153,6 @@ class ServerResource extends Resource
                                         }
                                     })
                                     ->action(function (array $data, Forms\Set $set) {
-                                        // 5. قرار دادن مقدار انتخاب شده در فیلد اصلی
                                         if (isset($data['selected_inbound'])) {
                                             $set('inbound_id', $data['selected_inbound']);
                                             Notification::make()->title('اینباند انتخاب شد')->success()->send();
@@ -173,6 +166,80 @@ class ServerResource extends Resource
                             ->default(true)
                             ->inline(false),
                     ]),
+
+
+                Forms\Components\Section::make('تنظیمات لینک خروجی')
+                    ->description('نوع لینک تحویلی به کاربر برای این سرور خاص')
+                    ->schema([
+                        Forms\Components\Radio::make('link_type')
+                            ->label('نوع لینک')
+                            ->options([
+                                'single' => '🔸 لینک تکی (Single Config)',
+                                'subscription' => '🔹 لینک سابسکریپشن (Subscription URL)',
+                                'tunnel' => '🚇 لینک تانل شده (Tunneled)', // 🔥 گزینه سوم
+                            ])
+                            ->default('single')
+                            ->required()
+                            ->inline()
+                            ->inlineLabel(false)
+                            ->live(), // 🔥 مهم: برای نمایش فیلدهای شرطی
+
+                        // 🔥 بخش ۱: وقتی سابسکریپشن انتخاب شد
+                        Forms\Components\Grid::make(2)
+                            ->visible(fn (Forms\Get $get) => $get('link_type') === 'subscription')
+                            ->schema([
+                                Forms\Components\TextInput::make('subscription_domain')
+                                    ->label('دامنه/آدرس سابسکریپشن')
+                                    ->placeholder('sub.example.com')
+                                    ->helperText('مثال: sub.domain.com یا 1.2.3.4 (بدون http/https)')
+                                    ->prefix(fn (Forms\Get $get) => $get('is_https') ? 'https://' : 'http://')
+                                    ->suffix(fn (Forms\Get $get) => ':' . ($get('subscription_port') ?: '2053'))
+                                    ->required(),
+
+                                Forms\Components\TextInput::make('subscription_path')
+                                    ->label('مسیر (Path) سابسکریپشن')
+                                    ->placeholder('/sub/')
+                                    ->default('/sub/')
+                                    ->helperText('معمولاً /sub/ یا /api/ است'),
+
+                                Forms\Components\TextInput::make('subscription_port')
+                                    ->label('پورت سابسکریپشن')
+                                    ->numeric()
+                                    ->default(2053)
+                                    ->placeholder('2053'),
+                            ]),
+
+                        // 🔥 بخش ۲: وقتی تانل شده انتخاب شد
+                        Forms\Components\Grid::make(2)
+                            ->visible(fn (Forms\Get $get) => $get('link_type') === 'tunnel')
+                            ->schema([
+                                Forms\Components\TextInput::make('tunnel_address')
+                                    ->label('آدرس IP/دامنه تانل')
+                                    ->placeholder('77.237.70.163 یا tunnel.domain.com')
+                                    ->helperText('📌 آدرسی که کاربر در لینک کانفیگ می‌بیند (آدرس سرور میانی/تانل)')
+                                    ->required(),
+
+                                Forms\Components\TextInput::make('tunnel_port')
+                                    ->label('پورت تانل')
+                                    ->numeric()
+                                    ->default(443)
+                                    ->placeholder('443')
+                                    ->helperText('پورتی که روی سرور تانل باز شده (معمولاً 443 یا 8080)'),
+
+                                Forms\Components\Toggle::make('tunnel_is_https')
+                                    ->label('اتصال امن (HTTPS) برای تانل')
+                                    ->default(false)
+                                    ->inline(false),
+                            ]),
+
+                        // 🔥 بخش ۳: توضیحات برای لینک تکی (اختیاری)
+                        Forms\Components\Placeholder::make('single_info')
+                            ->content('✅ لینک تکی مستقیماً با آدرس IP/دامنه اصلی پنل ساخته می‌شود.')
+                            ->visible(fn (Forms\Get $get) => $get('link_type') === 'single')
+                            ->columnSpanFull(),
+
+                    ])->columns(1),
+
 
                 Forms\Components\Section::make('مدیریت ظرفیت')->schema([
                     Forms\Components\TextInput::make('capacity')
@@ -208,6 +275,24 @@ class ServerResource extends Resource
                     ->label('آدرس IP')
                     ->copyable(),
 
+                Tables\Columns\TextColumn::make('link_type')
+                    ->label('نوع لینک')
+                    ->badge()
+                    ->color(fn (string $state): string => match ($state) {
+                        'single' => 'gray',
+                        'subscription' => 'success',
+                    }),
+
+                Tables\Columns\TextColumn::make('link_type')
+                    ->label('نوع لینک')
+                    ->badge()
+                    ->color(fn (string $state): string => match ($state) {
+                        'single' => 'gray',
+                        'subscription' => 'success',
+                        'tunnel' => 'warning',
+                    }),
+
+
                 Tables\Columns\TextColumn::make('current_users')
                     ->label('وضعیت ظرفیت')
                     ->formatStateUsing(fn ($record) => "{$record->current_users} / {$record->capacity}")
@@ -237,4 +322,36 @@ class ServerResource extends Resource
             'edit' => Pages\EditServer::route('/{record}/edit'),
         ];
     }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        try {
+            $settings = \App\Models\Setting::all()->pluck('value', 'key');
+            $panelType = $settings->get('panel_type');
+            $isMultiEnabled = filter_var(
+                $settings->get('enable_multilocation', false),
+                FILTER_VALIDATE_BOOLEAN
+            );
+
+            return $panelType === 'xui' && $isMultiEnabled;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    protected static function generateDefaultSubUrl(Forms\Get $get): string
+    {
+        $ip = $get('ip_address');
+        $isHttps = $get('is_https');
+        $port = $get('subscription_port') ?? '';
+
+        if (empty($ip)) {
+            return 'https://example.com/sub/';
+        }
+
+        $protocol = $isHttps ? 'https://' : 'http://';
+        // Assuming default path is /sub/
+        return "{$protocol}{$ip}/sub/";
+    }
+
 }

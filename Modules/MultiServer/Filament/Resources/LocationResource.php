@@ -53,4 +53,20 @@ class LocationResource extends Resource
             'edit' => Pages\EditLocation::route('/{record}/edit'),
         ];
     }
+
+    public static function shouldRegisterNavigation(): bool
+    {
+        try {
+            $settings = \App\Models\Setting::all()->pluck('value', 'key');
+            $panelType = $settings->get('panel_type');
+            $isMultiEnabled = filter_var(
+                $settings->get('enable_multilocation', false),
+                FILTER_VALIDATE_BOOLEAN
+            );
+
+            return $panelType === 'xui' && $isMultiEnabled;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
 }

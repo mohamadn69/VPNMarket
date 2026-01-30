@@ -8,7 +8,6 @@ use App\Models\Inbound;
 use App\Models\Order;
 use App\Models\Setting;
 use App\Models\Transaction;
-use App\Models\Notification as UserNotification;
 use App\Services\MarzbanService;
 use App\Services\XUIService;
 use Filament\Forms;
@@ -24,6 +23,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Telegram\Bot\Laravel\Facades\Telegram;
+use Illuminate\Support\Str;
 
 class OrderResource extends Resource
 {
@@ -75,326 +75,226 @@ class OrderResource extends Resource
                             $user = $order->user;
                             $plan = $order->plan;
 
+                            // --- 1. شارژ کیف پول ---
                             if (!$plan) {
                                 $order->update(['status' => 'paid']);
                                 $user->increment('balance', $order->amount);
                                 Transaction::create(['user_id' => $user->id, 'order_id' => $order->id, 'amount' => $order->amount, 'type' => 'deposit', 'status' => 'completed', 'description' => "شارژ کیف پول (تایید دستی فیش)"]);
-                                $user->notifications()->create([
-                                    'type' => 'wallet_charged_approved',
-                                    'title' => 'کیف پول شما شارژ شد!',
-                                    'message' => "مبلغ " . number_format($order->amount) . " تومان با موفقیت به کیف پول شما اضافه شد.",
-                                    'link' => route('dashboard', ['tab' => 'order_history']),
-                                ]);
-
-                                Notification::make()->title('کیف پول کاربر با موفقیت شارژ شد.')->success()->send();
-
+                                $user->notifications()->create(['type' => 'wallet_charged_approved', 'title' => 'کیف پول شارژ شد', 'message' => "مبلغ " . number_format($order->amount) . " تومان اضافه شد.", 'link' => route('dashboard', ['tab' => 'order_history'])]);
+                                Notification::make()->title('کیف پول شارژ شد.')->success()->send();
                                 if ($user->telegram_chat_id) {
                                     try {
-                                        $telegramMessage = "✅ کیف پول شما به مبلغ *" . number_format($order->amount) . " تومان* با موفقیت شارژ شد.\n\n";
-                                        $telegramMessage .= "موجودی جدید شما: *" . number_format($user->fresh()->balance) . " تومان*";
-
+                                        $msg = "✅ کیف پول شما شارژ شد.\nمبلغ: " . number_format($order->amount) . " تومان\nموجودی: " . number_format($user->fresh()->balance) . " تومان";
                                         Telegram::setAccessToken($settings->get('telegram_bot_token'));
-                                        Telegram::sendMessage([
-                                            'chat_id' => $user->telegram_chat_id,
-                                            'text' => $telegramMessage,
-                                            'parse_mode' => 'Markdown'
-                                        ]);
-                                    } catch (\Exception $e) {
-                                        Log::error('Failed to send wallet charge notification via Telegram: ' . $e->getMessage());
-                                    }
+                                        Telegram::sendMessage(['chat_id' => $user->telegram_chat_id, 'text' => $msg, 'parse_mode' => 'Markdown']);
+                                    } catch (\Exception $e) {}
                                 }
-
                                 return;
                             }
 
+                            // --- 2. تمدید یا خرید سرویس ---
+                            $isRenewal = (bool)$order->renews_order_id;
+                            $originalOrder = $isRenewal ? Order::find($order->renews_order_id) : null;
+
+                            if ($isRenewal && !$originalOrder) {
+                                Notification::make()->title('خطا')->body('سفارش اصلی یافت نشد.')->danger()->send(); return;
+                            }
+
+                            $uniqueUsername = $order->panel_username ?? "user-{$user->id}-order-" . ($isRenewal ? $originalOrder->id : $order->id);
+                            $uniqueUsername = trim($uniqueUsername);
+
+                            $newExpiresAt = $isRenewal ? (new \DateTime($originalOrder->expires_at))->modify("+{$plan->duration_days} days") : now()->addDays($plan->duration_days);
+
+                            // --- تشخیص سرور (بخش اصلاح شده) ---
+                            $isMultiLocationEnabled = filter_var($settings->get('enable_multilocation', false), FILTER_VALIDATE_BOOLEAN);
                             $panelType = $settings->get('panel_type');
+                            $targetServer = null;
+
+                            // مقادیر پیش‌فرض
+                            $xuiHost = $settings->get('xui_host'); $xuiUser = $settings->get('xui_user'); $xuiPass = $settings->get('xui_pass'); $inboundId = (int)$settings->get('xui_default_inbound_id');
+
+                            // 🔥 اصلاح مهم: پیدا کردن سرور اصلی در حالت تمدید
+                            $targetServerId = $order->server_id;
+                            if (!$targetServerId && $isRenewal && $originalOrder) {
+                                $targetServerId = $originalOrder->server_id;
+                            }
+
+                            if ($isMultiLocationEnabled && class_exists('Modules\MultiServer\Models\Server') && $targetServerId) {
+                                $targetServer = \Modules\MultiServer\Models\Server::find($targetServerId);
+                                if ($targetServer && $targetServer->is_active) {
+                                    $panelType = 'xui'; $xuiHost = $targetServer->full_host; $xuiUser = $targetServer->username; $xuiPass = $targetServer->password; $inboundId = $targetServer->inbound_id;
+
+                                    // اگر تمدید است، سرور آیدی را روی سفارش جدید هم ست کن تا برای دفعه بعد گم نشود
+                                    if ($isRenewal && !$order->server_id) {
+                                        $order->server_id = $targetServerId;
+                                        // ذخیره در انتهای تراکنش انجام می‌شود
+                                    }
+                                }
+                            }
+
                             $success = false;
                             $finalConfig = '';
-                            $isRenewal = (bool)$order->renews_order_id;
+                            $finalUuid = null;
+                            $finalSubId = null;
 
-                            $originalOrder = $isRenewal ? Order::find($order->renews_order_id) : null;
-                            if ($isRenewal && !$originalOrder) {
-                                Notification::make()->title('خطا')->body('سفارش اصلی جهت تمدید یافت نشد.')->danger()->send();
-                                return;
-                            }
-                            $uniqueUsername = $order->panel_username ?? "user-{$user->id}-order-". ($isRenewal ? $originalOrder->id : $order->id);
-                              $newExpiresAt = $isRenewal
-                                ? (new \DateTime($originalOrder->expires_at))->modify("+{$plan->duration_days} days")
-                                : now()->addDays($plan->duration_days);
+                            try {
+                                if ($panelType === 'marzban') {
+                                    $marzbanService = new MarzbanService(
+                                        (string) $settings->get('marzban_host'),
+                                        (string) $settings->get('marzban_sudo_username'),
+                                        (string) $settings->get('marzban_sudo_password'),
+                                        (string) $settings->get('marzban_node_hostname')
+                                    );
+                                    $userData = ['expire' => $newExpiresAt->getTimestamp(), 'data_limit' => $plan->volume_gb * 1073741824];
+                                    if ($isRenewal) {
+                                        $response = $marzbanService->updateUser($uniqueUsername, $userData);
+                                        $marzbanService->resetUserTraffic($uniqueUsername);
+                                    } else {
+                                        $response = $marzbanService->createUser(array_merge($userData, ['username' => $uniqueUsername]));
+                                    }
+                                    if ($response && (isset($response['subscription_url']) || isset($response['username']))) {
+                                        $finalConfig = $marzbanService->generateSubscriptionLink($response);
+                                        $success = true;
+                                    } else throw new \Exception('خطا در مرزبان');
 
-                            if ($panelType === 'marzban') {
-                                $marzbanService = new MarzbanService(
-                                    (string) $settings->get('marzban_host'),
-                                    (string) $settings->get('marzban_sudo_username'),
-                                    (string) $settings->get('marzban_sudo_password'),
-                                    (string) $settings->get('marzban_node_hostname')
-                                );
+                                } elseif ($panelType === 'xui') {
+                                    $xui = new XUIService($xuiHost, $xuiUser, $xuiPass);
+                                    if (!$xui->login()) throw new \Exception('خطا در لاگین X-UI');
 
-                                $userData = ['expire' => $newExpiresAt->getTimestamp(), 'data_limit' => $plan->volume_gb * 1073741824];
-                                $response = $isRenewal ? $marzbanService->updateUser($uniqueUsername, $userData) : $marzbanService->createUser(array_merge($userData, ['username' => $uniqueUsername]));
+                                    // اینباند
+                                    $inboundData = null;
+                                    if ($targetServer) {
+                                        $inbounds = $xui->getInbounds();
+                                        foreach ($inbounds as $i) if ($i['id'] == $inboundId) { $inboundData = $i; break; }
+                                    } else {
+                                        $im = Inbound::whereJsonContains('inbound_data->id', (int)$inboundId)->first();
+                                        if ($im) $inboundData = is_string($im->inbound_data) ? json_decode($im->inbound_data, true) : $im->inbound_data;
+                                    }
+                                    if (!$inboundData) throw new \Exception('اینباند یافت نشد.');
 
-                                if ($response && (isset($response['subscription_url']) || isset($response['username']))) {
-                                    $finalConfig = $marzbanService->generateSubscriptionLink($response);
+                                    // نوع لینک (الان که سرور درست پیدا شده، این هم درست کار می‌کند)
+                                    $linkType = $targetServer ? ($targetServer->link_type ?? 'single') : $settings->get('xui_link_type', 'single');
+                                    $clientData = ['email' => $uniqueUsername, 'total' => $plan->volume_gb * 1073741824, 'expiryTime' => $newExpiresAt->getTimestamp() * 1000];
+
+                                    // عملیات پنل
+                                    if ($isRenewal) {
+                                        $clients = $xui->getClients($inboundData['id']);
+                                        $client = collect($clients)->first(function ($c) use ($uniqueUsername) {
+                                            return strtolower(trim($c['email'])) === strtolower(trim($uniqueUsername));
+                                        });
+
+                                        if ($client) {
+                                            $clientData['id'] = $client['id'];
+                                            $clientData['subId'] = $client['subId'] ?? Str::random(16);
+                                            $upRes = $xui->updateClient($inboundData['id'], $client['id'], $clientData);
+                                            if ($upRes && ($upRes['success'] ?? false)) {
+                                                $xui->resetClientTraffic($inboundData['id'], $uniqueUsername);
+                                                $finalUuid = $client['id'];
+                                                $finalSubId = $clientData['subId'];
+                                            } else throw new \Exception('خطا در آپدیت کاربر');
+                                        } else {
+                                            throw new \Exception("کاربر {$uniqueUsername} یافت نشد.");
+                                        }
+                                    } else {
+                                        if ($linkType === 'subscription') $clientData['subId'] = Str::random(16);
+                                        $addRes = $xui->addClient($inboundData['id'], $clientData);
+                                        if ($addRes && ($addRes['success'] ?? false)) {
+                                            $finalUuid = $addRes['generated_uuid'] ?? json_decode($addRes['obj']['settings'], true)['clients'][0]['id'];
+                                            $finalSubId = $addRes['generated_subId'] ?? $clientData['subId'];
+                                            if ($targetServer) $targetServer->increment('current_users');
+                                        } else throw new \Exception('خطا در ساخت کاربر');
+                                    }
+
+                                    // ساخت لینک (با تنظیمات سرور درست)
+                                    $stream = json_decode($inboundData['streamSettings'] ?? '{}', true);
+                                    $proto = $inboundData['protocol'] ?? 'vless';
+                                    $port = $inboundData['port'] ?? 443;
+
+                                    switch ($linkType) {
+                                        case 'subscription':
+                                            $subUrl = $targetServer ? ($targetServer->subscription_domain ?? parse_url($xuiHost, PHP_URL_HOST)) : $settings->get('xui_subscription_url_base');
+                                            $subPort = $targetServer ? ($targetServer->subscription_port ?? 2053) : '';
+                                            $prot = ($targetServer && !$targetServer->is_https) ? 'http' : 'https';
+                                            $base = rtrim($subUrl, '/');
+                                            if($subPort && !Str::contains($base, ":$subPort")) $base .= ":$subPort";
+                                            if(!Str::startsWith($base, 'http')) $base = "$prot://$base";
+                                            $finalConfig = "$base" . ($targetServer->subscription_path ?? '/sub/') . $finalSubId;
+                                            break;
+
+                                        case 'tunnel':
+                                            $tunAddr = $targetServer->tunnel_address;
+                                            $tunPort = $targetServer->tunnel_port ?? 443;
+                                            // اینجا چون سرور درست انتخاب شده، این تنظیمات درست اعمال میشن
+                                            $tls = filter_var($targetServer->tunnel_is_https, FILTER_VALIDATE_BOOLEAN);
+
+                                            $p = ['type' => $stream['network'] ?? 'tcp'];
+                                            if ($tls) {
+                                                $p['security'] = 'tls';
+                                                $p['sni'] = $tunAddr;
+                                            } else {
+                                                $p['security'] = 'none';
+                                                if($proto === 'vless') $p['encryption'] = 'none';
+                                            }
+
+                                            if (($p['type'] ?? '') === 'ws') {
+                                                $p['path'] = $stream['wsSettings']['path'] ?? '/';
+                                                $p['host'] = $stream['wsSettings']['headers']['Host'] ?? $tunAddr;
+                                            }
+
+                                            $remark = "🇺🇸-" . $uniqueUsername;
+                                            $qs = http_build_query($p);
+                                            $finalConfig = "vless://{$finalUuid}@{$tunAddr}:{$tunPort}?{$qs}#" . rawurlencode($remark);
+                                            break;
+
+                                        default:
+                                            if (!$finalUuid) throw new \Exception("UUID پیدا نشد");
+                                            $p = ['type' => $stream['network'] ?? 'tcp', 'security' => $stream['security'] ?? 'none'];
+                                            if ($p['security'] === 'tls') $p['sni'] = parse_url($xuiHost, PHP_URL_HOST);
+                                            $qs = http_build_query(array_filter($p));
+                                            $finalConfig = "vless://{$finalUuid}@" . parse_url($xuiHost, PHP_URL_HOST) . ":{$inboundId}?{$qs}#" . rawurlencode($plan->name);
+                                    }
                                     $success = true;
-                                } else {
-                                    Notification::make()->title('خطا در ارتباط با مرزبان')->body($response['detail'] ?? 'پاسخ نامعتبر.')->danger()->send();
-                                    return;
                                 }
-                            } elseif ($panelType === 'xui') {
-                                $xuiService = new XUIService($settings->get('xui_host'), $settings->get('xui_user'), $settings->get('xui_pass'));
-                                $defaultInboundId = $settings->get('xui_default_inbound_id');
-                                $inbound = Inbound::where('inbound_data->id', $defaultInboundId)->first();
-
-                                if (!$inbound || !$inbound->inbound_data) {
-                                    Notification::make()->title('خطا')->body('اطلاعات اینباند پیش‌فرض برای X-UI یافت نشد.')->danger()->send();
-                                    return;
-                                }
-                                if (!$xuiService->login()) {
-                                    Notification::make()->title('خطا')->body('خطا در لاگین به پنل X-UI.')->danger()->send();
-                                    return;
-                                }
-
-                                $inboundData = is_string($inbound->inbound_data)
-                                    ? json_decode($inbound->inbound_data, true)
-                                    : $inbound->inbound_data;
-
-                                // استفاده از getTimestamp() به جای timestamp
-                                $clientData = ['email' => $uniqueUsername, 'total' => $plan->volume_gb * 1073741824, 'expiryTime' => $newExpiresAt->getTimestamp() * 1000];
-
-                                if ($isRenewal) {
-                                    // ----- THIS IS THE FIXED CODE FOR RENEWAL -----
-                                    $originalOrder = Order::find($order->renews_order_id);
-                                    if (!$originalOrder || !$originalOrder->config_details) {
-                                        Notification::make()->title('خطا')->body('اطلاعات سرویس اصلی یافت نشد.')->danger()->send();
-                                        return;
-                                    }
-
-                                    $linkType = $settings->get('xui_link_type', 'single');
-                                    $originalConfig = $originalOrder->config_details;
-                                    $clientId = null;
-                                    $subId = null;
-
-                                    if ($linkType === 'subscription') {
-                                        preg_match('/\/sub\/([a-zA-Z0-9]+)/', $originalConfig, $matches);
-                                        $subId = $matches[1] ?? null;
-
-                                        if (!$subId) {
-                                            Notification::make()->title('خطا')->body('شناسه اشتراک (subId) در کانفیگ قبلی یافت نشد.')->danger()->send();
-                                            return;
-                                        }
-
-                                        $clientData['subId'] = $subId;
-                                        $clients = $xuiService->getClients($inboundData['id']);
-
-                                        if (!empty($clients)) {
-                                            $client = collect($clients)->firstWhere('subId', $subId);
-                                            if (!$client) {
-                                                $client = collect($clients)->firstWhere('email', $uniqueUsername);
-                                            }
-                                            $clientId = $client['id'] ?? null;
-                                        }
-
-                                        if (!$clientId) {
-                                            Log::warning('Client not found, attempting to create new', [
-                                                'inbound_id' => $inboundData['id'],
-                                                'email' => $uniqueUsername,
-                                                'subId' => $subId,
-                                            ]);
-
-                                            $addResponse = $xuiService->addClient($inboundData['id'], array_merge($clientData, ['subId' => $subId]));
-
-                                            if ($addResponse && isset($addResponse['success']) && $addResponse['success']) {
-                                                $subBaseUrl = rtrim($settings->get('xui_subscription_url_base'), '/');
-                                                $newSubId = $addResponse['generated_subId'];
-                                                if ($subBaseUrl && $newSubId) {
-                                                    $finalConfig = $subBaseUrl . '/sub/' . $newSubId;
-                                                    $success = true;
-                                                } else {
-                                                    Notification::make()->title('خطا')->body('خطا در ساخت لینک سابسکریپشن جدید.')->danger()->send();
-                                                    return;
-                                                }
-                                            } else {
-                                                $errorMsg = $addResponse['msg'] ?? 'خطای نامشخص';
-
-                                                if (strpos($errorMsg, 'Duplicate email') !== false) {
-                                                    Log::critical('CRITICAL: getClients returned empty but client exists!', [
-                                                        'inbound_id' => $inboundData['id'],
-                                                        'email' => $uniqueUsername,
-                                                        'subId' => $subId,
-                                                    ]);
-                                                    Notification::make()->title('خطای سیستمی')->body('سرویس X-UI به درستی کار نمی‌کند.')->danger()->send();
-                                                    return;
-                                                }
-
-                                                Notification::make()->title('خطا')->body('خطا در ساخت کلاینت: ' . $errorMsg)->danger()->send();
-                                                return;
-                                            }
-                                        } else {
-                                            $clientData['id'] = $clientId;
-                                            $response = $xuiService->updateClient($inboundData['id'], $clientId, $clientData);
-
-                                            if ($response && isset($response['success']) && $response['success']) {
-                                                $finalConfig = $originalConfig;
-                                                $success = true;
-                                            } else {
-                                                Notification::make()->title('خطا')->body('خطا در بروزرسانی کلاینت: ' . ($response['msg'] ?? 'خطای نامشخص'))->danger()->send();
-                                                return;
-                                            }
-                                        }
-                                    } else {
-                                        // منطق برای لینک single
-                                        preg_match('/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i', $originalConfig, $matches);
-                                        $clientId = $matches[1] ?? null;
-
-                                        if (!$clientId) {
-                                            Notification::make()->title('خطا')->body('UUID در کانفیگ یافت نشد.')->danger()->send();
-                                            return;
-                                        }
-
-                                        $clientData['id'] = $clientId;
-                                        $clients = $xuiService->getClients($inboundData['id']);
-
-                                        if (!empty($clients)) {
-                                            $client = collect($clients)->firstWhere('id', $clientId);
-                                            if (!$client) {
-                                                $client = collect($clients)->firstWhere('email', $uniqueUsername);
-                                            }
-                                        }
-
-                                        if (empty($clients) || !$client) {
-                                            $addResponse = $xuiService->addClient($inboundData['id'], $clientData);
-
-                                            if ($addResponse && isset($addResponse['success']) && $addResponse['success']) {
-                                                $uuid = $addResponse['generated_uuid'];
-                                                $streamSettings = $inboundData['streamSettings'] ?? [];
-                                                if (is_string($streamSettings)) {
-                                                    $streamSettings = json_decode($streamSettings, true) ?? [];
-                                                }
-
-                                                $parsedUrl = parse_url($settings->get('xui_host'));
-                                                $serverIpOrDomain = !empty($inboundData['listen']) ? $inboundData['listen'] : $parsedUrl['host'];
-                                                $port = $inboundData['port'];
-                                                $remark = $inboundData['remark'];
-
-                                                $paramsArray = [
-                                                    'type' => $streamSettings['network'] ?? null,
-                                                    'security' => $streamSettings['security'] ?? null,
-                                                    'path' => $streamSettings['wsSettings']['path'] ?? ($streamSettings['grpcSettings']['serviceName'] ?? null),
-                                                    'sni' => $streamSettings['tlsSettings']['serverName'] ?? null,
-                                                    'host' => $streamSettings['wsSettings']['headers']['Host'] ?? null
-                                                ];
-
-                                                $params = http_build_query(array_filter($paramsArray));
-                                                $fullRemark = $uniqueUsername . '|' . $remark;
-                                                $finalConfig = "vless://{$uuid}@{$serverIpOrDomain}:{$port}?{$params}#" . urlencode($fullRemark);
-                                                $success = true;
-                                            } else {
-                                                Notification::make()->title('خطا')->body('خطا در ساخت کلاینت: ' . ($addResponse['msg'] ?? 'خطای نامشخص'))->danger()->send();
-                                                return;
-                                            }
-                                        } else {
-                                            $response = $xuiService->updateClient($inboundData['id'], $clientId, $clientData);
-
-                                            if ($response && isset($response['success']) && $response['success']) {
-                                                $finalConfig = $originalConfig;
-                                                $success = true;
-                                            } else {
-                                                Notification::make()->title('خطا')->body('خطا در بروزرسانی کلاینت: ' . ($response['msg'] ?? 'خطای نامشخص'))->danger()->send();
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    // ----- END OF FIXED CODE -----
-                                } else {
-                                    // سفارش جدید - منطق قبلی برای X-UI
-                                    $response = $xuiService->addClient($inboundData['id'], $clientData);
-
-                                    if ($response && isset($response['success']) && $response['success']) {
-                                        $linkType = $settings->get('xui_link_type', 'single');
-                                        if ($linkType === 'subscription') {
-                                            $subId = $response['generated_subId'];
-                                            $subBaseUrl = rtrim($settings->get('xui_subscription_url_base'), '/');
-                                            if ($subBaseUrl && $subId) {
-                                                $finalConfig = $subBaseUrl . '/sub/' . $subId;
-                                                $success = true;
-                                            }
-                                        } else {
-                                            $uuid = $response['generated_uuid'];
-                                            $streamSettings = json_decode($inboundData['streamSettings'], true);
-                                            $parsedUrl = parse_url($settings->get('xui_host'));
-                                            $serverIpOrDomain = !empty($inboundData['listen']) ? $inboundData['listen'] : $parsedUrl['host'];
-                                            $port = $inboundData['port'];
-                                            $remark = $inboundData['remark'];
-                                            $paramsArray = ['type' => $streamSettings['network'] ?? null, 'security' => $streamSettings['security'] ?? null, 'path' => $streamSettings['wsSettings']['path'] ?? ($streamSettings['grpcSettings']['serviceName'] ?? null), 'sni' => $streamSettings['tlsSettings']['serverName'] ?? null, 'host' => $streamSettings['wsSettings']['headers']['Host'] ?? null];
-                                            $params = http_build_query(array_filter($paramsArray));
-                                            $fullRemark = $uniqueUsername . '|' . $remark;
-                                            $finalConfig = "vless://{$uuid}@{$serverIpOrDomain}:{$port}?{$params}#" . urlencode($fullRemark);
-                                            $success = true;
-                                        }
-                                    } else {
-                                        $errorMsg = $response['msg'] ?? 'پاسخ نامعتبر';
-                                        Notification::make()->title('خطا')->body('خطا در ساخت کاربر در پنل سنایی: ' . $errorMsg)->danger()->send();
-                                        return;
-                                    }
-                                }
-                            } else {
-                                Notification::make()->title('خطا')->body('نوع پنل در تنظیمات مشخص نشده است.')->danger()->send();
-
-                                $user->notifications()->create([
-                                    'type' => 'panel_type_error_admin',
-                                    'title' => 'خطا در فعال‌سازی سرویس!',
-                                    'message' => "نوع پنل در تنظیمات سیستم به درستی مشخص نشده است. لطفاً به پشتیبانی اطلاع دهید.",
-                                    'link' => route('dashboard', ['tab' => 'support']),
-                                ]);
+                            } catch (\Exception $e) {
+                                Notification::make()->title('خطا')->body($e->getMessage())->danger()->send();
                                 return;
                             }
 
+                            // --- پایان ---
                             if ($success) {
+                                $dataToUpdate = [
+                                    'config_details' => $finalConfig,
+                                    'expires_at' => $newExpiresAt,
+                                    'panel_username' => $uniqueUsername,
+                                    'panel_client_id' => $finalUuid,
+                                    'panel_sub_id' => $finalSubId
+                                ];
+
                                 if($isRenewal) {
-                                    $originalOrder->update([
-                                        'config_details' => $finalConfig,
-                                        'expires_at' => $newExpiresAt->format('Y-m-d H:i:s'),
-                                        'panel_username' => $uniqueUsername
-                                    ]);
-
+                                    $originalOrder->update($dataToUpdate);
                                     $user->update(['show_renewal_notification' => true]);
-
-                                    $user->notifications()->create([
-                                        'type' => 'service_renewed_admin',
-                                        'title' => 'سرویس شما تمدید شد!',
-                                        'message' => "تمدید سرویس {$originalOrder->plan->name} توسط مدیر تایید و فعال شد. لطفاً لینک اشتراک خود را به‌روزرسانی کنید.",
-                                        'link' => route('dashboard', ['tab' => 'my_services']),
-                                    ]);
+                                    $user->notifications()->create(['type'=>'renew','title'=>'تمدید شد','message'=>"تمدید {$plan->name}",'link'=>route('dashboard')]);
                                 } else {
-                                    $order->update([
-                                        'config_details' => $finalConfig,
-                                        'expires_at' => $newExpiresAt,
-                                        'panel_username' => $uniqueUsername
-                                    ]);
-                                    $user->notifications()->create([
-                                        'type' => 'service_activated_admin',
-                                        'title' => 'سرویس شما فعال شد!',
-                                        'message' => "خرید سرویس {$plan->name} توسط مدیر تایید و فعال شد.",
-                                        'link' => route('dashboard', ['tab' => 'my_services']),
-                                    ]);
+                                    $order->update($dataToUpdate);
+                                    $user->notifications()->create(['type'=>'activate','title'=>'فعال شد','message'=>"خرید {$plan->name}",'link'=>route('dashboard')]);
                                 }
 
                                 $order->update(['status' => 'paid']);
                                 $description = ($isRenewal ? "تمدید سرویس" : "خرید سرویس") . " {$plan->name}";
-                                Transaction::create(['user_id' => $user->id, 'order_id' => $order->id, 'amount' => $plan->price, 'type' => 'purchase', 'status' => 'completed', 'description' => $description]);
-                                OrderPaid::dispatch($order);
-                                Notification::make()->title('عملیات با موفقیت انجام شد.')->success()->send();
+                                Transaction::create(['user_id'=>$user->id, 'order_id'=>$order->id, 'amount'=>$plan->price, 'type'=>'purchase', 'status'=>'completed', 'description'=>$description]);
+
+                                if (class_exists(OrderPaid::class)) {
+                                    OrderPaid::dispatch($order);
+                                }
+
+                                Notification::make()->title('عملیات موفقیت‌آمیز بود.')->success()->send();
 
                                 if ($user->telegram_chat_id) {
                                     try {
-                                        $telegramMessage = $isRenewal
-                                            ? "✅ سرویس شما (*{$plan->name}*) با موفقیت تمدید شد.\n\n❗️*نکته مهم:* لینک اشتراک شما تغییر کرده است. لطفاً لینک جدید زیر را کپی و در نرم‌افزار خود آپدیت کنید:\n\n`" . $finalConfig . "`"
-                                            : "✅ سرویس شما (*{$plan->name}*) با موفقیت فعال شد.\n\nاطلاعات کانفیگ شما:\n`" . $finalConfig . "`\n\nمی‌توانید لینک بالا را کپی کرده و در نرم‌افزار خود import کنید.";
+                                        $msg = $isRenewal ? "✅ سرویس تمدید شد.\nلینک جدید:\n`$finalConfig`" : "✅ سرویس فعال شد.\nکانفیگ:\n`$finalConfig`";
                                         Telegram::setAccessToken($settings->get('telegram_bot_token'));
-                                        Telegram::sendMessage(['chat_id' => $user->telegram_chat_id, 'text' => $telegramMessage, 'parse_mode' => 'Markdown']);
-                                    } catch (\Exception $e) {
-                                        Log::error('Failed to send Telegram notification: ' . $e->getMessage());
-                                    }
+                                        Telegram::sendMessage(['chat_id' => $user->telegram_chat_id, 'text' => $msg, 'parse_mode' => 'Markdown']);
+                                    } catch (\Exception $e) {}
                                 }
                             }
                         });
@@ -405,11 +305,5 @@ class OrderResource extends Resource
     }
 
     public static function getRelations(): array { return []; }
-    public static function getPages(): array {
-        return [
-            'index' => Pages\ListOrders::route('/'),
-            'create' => Pages\CreateOrder::route('/create'),
-            'edit' => Pages\EditOrder::route('/{record}/edit'),
-        ];
-    }
+    public static function getPages(): array { return ['index' => Pages\ListOrders::route('/'), 'create' => Pages\CreateOrder::route('/create'), 'edit' => Pages\EditOrder::route('/{record}/edit')]; }
 }
