@@ -172,14 +172,24 @@ class WebhookController extends Controller
         $message = $update->getMessage();
         $chatId = $message->getChat()->getId();
         $text = trim($message->getText() ?? '');
+        
+        Log::info("HTM_START", ['chat_id' => $chatId, 'text' => $text]);
+        
         $user = User::where('telegram_chat_id', $chatId)->first();
+        Log::info("HTM_USER_CHECK", ['found' => (bool)$user]);
 
-        if ($user && !$this->isUserMemberOfChannel($user)) {
-            $this->showChannelRequiredMessage($chatId);
-            return;
+        if ($user) {
+            $member = $this->isUserMemberOfChannel($user);
+            Log::info("HTM_MEMBERSHIP_CHECK", ['is_member' => $member]);
+            if (!$member) {
+                Log::info("HTM_MEMBERSHIP_REQUIRED_STOP");
+                $this->showChannelRequiredMessage($chatId);
+                return;
+            }
         }
 
         if (!$user) {
+            Log::info("HTM_CREATING_NEW_USER");
             $userFirstName = $message->getFrom()->getFirstName() ?? 'کاربر';
             $password = Str::random(10);
             $user = User::create([
@@ -191,6 +201,7 @@ class WebhookController extends Controller
             ]);
 
             if (!$this->isUserMemberOfChannel($user)) {
+                Log::info("HTM_NEW_USER_MEMBERSHIP_REQUIRED_STOP");
                 $this->showChannelRequiredMessage($chatId);
                 return;
             }
@@ -222,6 +233,7 @@ class WebhookController extends Controller
                 }
             }
 
+            Log::info("HTM_SENDING_WELCOME");
             Telegram::sendMessage([
                 'chat_id' => $chatId,
                 'text' => $welcomeMessage,
@@ -231,65 +243,66 @@ class WebhookController extends Controller
         }
 
         if ($user->bot_state) {
+            Log::info("HTM_BOT_STATE_ACTIVE", ['state' => $user->bot_state]);
             if ($user->bot_state === 'awaiting_deposit_amount') {
                 $this->processDepositAmount($user, $text);
+                return;
             } elseif (Str::startsWith($user->bot_state, 'awaiting_new_ticket_') || Str::startsWith($user->bot_state, 'awaiting_ticket_reply')) {
                 $this->processTicketConversation($user, $text, $update);
+                return;
             } elseif (Str::startsWith($user->bot_state, 'awaiting_discount_code|')) {
                 $orderId = Str::after($user->bot_state, 'awaiting_discount_code|');
                 $this->processDiscountCode($user, $orderId, $text);
-            }
-            elseif (Str::startsWith($user->bot_state, 'awaiting_username_for_order|')) {
+                return;
+            } elseif (Str::startsWith($user->bot_state, 'awaiting_username_for_order|')) {
                 $planId = Str::after($user->bot_state, 'awaiting_username_for_order|');
                 $this->processUsername($user, $planId, $text);
+                return;
             }
-
+            
+            Log::info("HTM_BOT_STATE_UNKNOWN_STOP");
             return;
         }
 
-        switch ($text) {
-            case '🛒 خرید سرویس':
-                $this->sendPlans($chatId);
-                break;
-            case '🛠 سرویس‌های من':
-                $this->sendMyServices($user);
-                break;
-            case '💰 کیف پول':
-                $this->sendWalletMenu($user);
-                break;
-            case '📜 تاریخچه تراکنش‌ها':
-                $this->sendTransactions($user);
-                break;
-            case '💬 پشتیبانی':
-                $this->showSupportMenu($user);
-                break;
-            case '🎁 دعوت از دوستان':
-                $this->sendReferralMenu($user);
-                break;
-            case '📚 راهنمای اتصال':
-                $this->sendTutorialsMenu($chatId);
-                break;
-            case '🧪 اکانت تست':
-                $this->handleTrialRequest($user);
-                break;
+        // نرمال‌سازی متن برای دکمه‌هایی که ممکن است نیم‌فاصله داشته باشند یا نداشته باشند
+        $normalizedText = str_replace(['‌', ' '], '', $text);
 
-            case '/start':
-                $telegramSettings = TelegramBotSetting::pluck('value', 'key');
-                $startMessage = $telegramSettings->get('start_message', 'سلام مجدد! لطفاً یک گزینه را انتخاب کنید:');
-                Telegram::sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => $this->escape($startMessage),
-                    'parse_mode' => 'MarkdownV2',
-                    'reply_markup' => $this->getReplyMainMenu()
-                ]);
-                break;
-            default:
-                Telegram::sendMessage([
-                    'chat_id' => $chatId,
-                    'text' => 'دستور شما نامفهوم است. لطفاً از دکمه‌های منو استفاده کنید.',
-                    'reply_markup' => $this->getReplyMainMenu()
-                ]);
-                break;
+        Log::info("HTM_SWITCH_START", ['normalized' => $normalizedText]);
+
+        if ($text === '🛒 خرید سرویس') {
+            $this->sendPlans($chatId);
+        } elseif ($normalizedText === '🛠سرویسهایمن' || $normalizedText === '🛠سرویس‌هایمن') {
+            $this->sendMyServices($user);
+        } elseif ($text === '💰 کیف پول') {
+            $this->sendWalletMenu($user);
+        } elseif ($text === '📜 تاریخچه تراکنش‌ها' || $normalizedText === '📜تاریخچهتراکنشها') {
+            $this->sendTransactions($user);
+        } elseif ($text === '💬 پشتیبانی') {
+            $this->showSupportMenu($user);
+        } elseif ($text === '🎁 دعوت از دوستان') {
+            $this->sendReferralMenu($user);
+        } elseif ($text === '📚 راهنمای اتصال') {
+            $this->sendTutorialsMenu($chatId);
+        } elseif ($text === '🧪 اکانت تست') {
+            $this->handleTrialRequest($user);
+        } elseif ($text === '/start') {
+            Log::info("HTM_HANDLING_START_COMMAND");
+            $telegramSettings = TelegramBotSetting::pluck('value', 'key');
+            $startMessage = $telegramSettings->get('start_message', 'سلام مجدد! لطفاً یک گزینه را انتخاب کنید:');
+            Telegram::sendMessage([
+                'chat_id' => $chatId,
+                'text' => $this->escape($startMessage),
+                'parse_mode' => 'MarkdownV2',
+                'reply_markup' => $this->getReplyMainMenu()
+            ]);
+            Log::info("HTM_START_COMMAND_FINISHED");
+        } else {
+            Log::info("HTM_DEFAULT_CASE");
+            Telegram::sendMessage([
+                'chat_id' => $chatId,
+                'text' => 'دستور شما نامفهوم است. لطفاً از دکمه‌های منو استفاده کنید.',
+                'reply_markup' => $this->getReplyMainMenu()
+            ]);
         }
     }
 
