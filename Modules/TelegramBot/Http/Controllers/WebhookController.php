@@ -3120,6 +3120,7 @@ class WebhookController extends Controller
                     'username' => $uniqueUsername,
                     'expire' => $expiresAt->timestamp,
                     'data_limit' => $dataLimitBytes,
+                    'group_ids' => $settings->get('pasargad_trial_group_id') ? [(int)$settings->get('pasargad_trial_group_id')] : [1],
                 ]);
 
                 if ($response && !empty($response['subscription_url'])) {

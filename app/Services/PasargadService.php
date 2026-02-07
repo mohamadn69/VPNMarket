@@ -237,11 +237,12 @@ class PasargadService
         try {
             $response = Http::withOptions(['verify' => false])
                 ->withToken($this->accessToken)
-                ->get($this->baseUrl . '/api/admin/group');
+                ->get($this->baseUrl . '/api/groups');
 
             if ($response->successful()) {
                 $data = $response->json();
-                return is_array($data) ? $data : ($data['data'] ?? []);
+                // پاسارگاد گروه‌ها را در کلید groups برمی‌گرداند
+                return $data['groups'] ?? $data['data'] ?? (is_array($data) ? $data : []);
             }
             return [];
 
