@@ -160,7 +160,10 @@ trait ManagesServiceProvisioning
 
                 $response = $isRenewal
                     ? $pasargadService->updateUser($uniqueUsername, $userData)
-                    : $pasargadService->createUser(array_merge($userData, ['username' => $uniqueUsername]));
+                    : $pasargadService->createUser(array_merge($userData, [
+                        'username' => $uniqueUsername,
+                        'group_ids' => $settings->get('pasargad_paid_group_id') ? [(int)$settings->get('pasargad_paid_group_id')] : [1],
+                    ]));
 
                 if ($response && (isset($response['subscription_url']) || isset($response['username']))) {
                     $finalConfig = $response['subscription_url'] ?? $pasargadService->generateSubscriptionLink($uniqueUsername);

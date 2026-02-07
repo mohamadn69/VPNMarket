@@ -263,6 +263,43 @@ class ThemeSettings extends Page implements HasForms
                                         ->columnSpan(2)
                                         ->searchable()
                                         ->native(false),
+                                    Select::make('pasargad_paid_group_id')
+                                        ->label('گروه سرویس‌های پولی')
+                                        ->options(function () {
+                                            try {
+                                                $host = Setting::where('key', 'pasargad_host')->first()?->value;
+                                                $user = Setting::where('key', 'pasargad_sudo_username')->first()?->value;
+                                                $pass = Setting::where('key', 'pasargad_sudo_password')->first()?->value;
+                                                
+                                                if (!$host || !$user || !$pass) {
+                                                    return ['' => '⚠️ ابتدا تنظیمات پاسارگاد را ذخیره کنید'];
+                                                }
+                                                
+                                                $service = new \App\Services\PasargadService($host, $user, $pass);
+                                                $groups = $service->getGroups();
+                                                
+                                                if (empty($groups)) {
+                                                    return ['' => '⚠️ گروهی یافت نشد'];
+                                                }
+                                                
+                                                $options = [];
+                                                foreach ($groups as $group) {
+                                                    $id = $group['id'] ?? null;
+                                                    $name = $group['name'] ?? 'بدون نام';
+                                                    if ($id !== null) {
+                                                        $options[$id] = "{$name} (ID: {$id})";
+                                                    }
+                                                }
+                                                return $options;
+                                            } catch (\Exception $e) {
+                                                Log::error('Failed to fetch Pasargad groups: ' . $e->getMessage());
+                                                return ['' => '⚠️ خطا در دریافت گروه‌ها'];
+                                            }
+                                        })
+                                        ->helperText('سرویس‌های خریداری شده در این گروه ساخته می‌شوند')
+                                        ->columnSpan(2)
+                                        ->searchable()
+                                        ->native(false),
                                 ]),
 
                             // 🔥 فقط وقتی نمایش داده می‌شود که X-UI انتخاب شده AND مولتی لوکیشن غیرفعال باشد
