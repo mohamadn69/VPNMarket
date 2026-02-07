@@ -259,23 +259,31 @@ class PasargadService
     public function generateSubscriptionLink(string $username): string
     {
         $baseUrl = $this->baseUrl;
+        $nodeHostname = $this->nodeHostname ? trim($this->nodeHostname) : null;
         
-        // اگر آدرس نود (سابسکریپشن) جداگانه تنظیم شده است
-        if ($this->nodeHostname) {
-            $nodeHost = trim($this->nodeHostname);
-            
-            // اگر با http شروع شده، یعنی یک URL کامل است
-            if (str_starts_with($nodeHost, 'http')) {
-                return rtrim($nodeHost, '/') . "/sub/{$username}";
-            }
-            
-            // در غیر این صورت، پروتکل را از baseUrl می‌گیریم اما پورت را حذف می‌کنیم (فرض بر CDN یا استاندارد)
-            $parsedBase = parse_url($baseUrl);
-            $scheme = $parsedBase['scheme'] ?? 'https';
-            return "{$scheme}://{$nodeHost}/sub/{$username}";
+        Log::debug('Pasargad generating sub link', [
+            'base_url' => $baseUrl,
+            'node_hostname' => $nodeHostname,
+            'username' => $username
+        ]);
+
+        // اگر آدرس نود (سابسکریپشن) به صورت URL کامل تنظیم شده است
+        if ($nodeHostname && str_starts_with($nodeHostname, 'http')) {
+            return rtrim($nodeHostname, '/') . "/sub/{$username}";
         }
+
+        // تجزیه baseUrl برای استخراج پروتکل و دامنه
+        $parsed = parse_url($baseUrl);
+        $scheme = $parsed['scheme'] ?? 'https';
+        $host = $nodeHostname ?: ($parsed['host'] ?? '');
         
-        return "{$baseUrl}/sub/{$username}";
+        // ساخت لینک نهایی بدون پورت ادمین
+        // اگر کاربر بخواهد پورت خاصی در nodeHostname بگذارد (domain:port)، اینجا اعمال می‌شود
+        $finalLink = "{$scheme}://{$host}/sub/{$username}";
+        
+        Log::debug('Pasargad final sub link', ['link' => $finalLink]);
+        
+        return $finalLink;
     }
 
     /**
