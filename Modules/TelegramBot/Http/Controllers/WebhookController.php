@@ -118,29 +118,52 @@ class WebhookController extends Controller
 
     public function handle(Request $request)
     {
+        Log::info("BOT_WEBHOOK_RECEIVED", ['ip' => $request->ip()]);
         try {
             $this->settings = Setting::all()->pluck('value', 'key');
             $botToken = $this->settings->get('telegram_bot_token');
+            
             if (!$botToken) {
                 Log::warning('Telegram bot token is not set.');
                 return response('ok', 200);
             }
+
+            Log::info("BOT_TOKEN_FOUND", ['token_prefix' => substr($botToken, 0, 5)]);
+            
             Telegram::setAccessToken($botToken);
             $update = Telegram::getWebhookUpdate();
+            
+            Log::info("UPDATE_OBJECT_CREATED", [
+                'type' => $update->detectType(),
+                'has_message' => $update->has('message'),
+                'is_callback' => $update->isType('callback_query')
+            ]);
 
             if ($update->isType('callback_query')) {
+                Log::info("PROCESSING_CALLBACK_QUERY");
                 $this->handleCallbackQuery($update);
             } elseif ($update->has('message')) {
+                Log::info("PROCESSING_MESSAGE");
                 $message = $update->getMessage();
                 if ($message->has('text')) {
+                    Log::info("MESSAGE_HAS_TEXT", ['text' => $message->getText()]);
                     $this->handleTextMessage($update);
                 } elseif ($message->has('photo')) {
+                    Log::info("MESSAGE_HAS_PHOTO");
                     $this->handlePhotoMessage($update);
                 }
+            } else {
+                Log::info("UPDATE_TYPE_NOT_HANDLED", ['type' => $update->detectType()]);
             }
         } catch (\Exception $e) {
-            Log::error('Telegram Bot Error: ' . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
+            Log::error('Telegram Bot Error: ' . $e->getMessage(), [
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => substr($e->getTraceAsString(), 0, 500)
+            ]);
         }
+        
+        Log::info("WEBHOOK_FINISHED");
         return response('ok', 200);
     }
 
