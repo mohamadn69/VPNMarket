@@ -94,6 +94,8 @@ class OrderResource extends Resource
                             }
 
                             // --- 2. تمدید یا خرید سرویس ---
+                            Log::info("Approving order {$order->id} for user {$user->id}");
+
                             $isRenewal = (bool)$order->renews_order_id;
                             $originalOrder = $isRenewal ? Order::find($order->renews_order_id) : null;
 
@@ -277,11 +279,20 @@ class OrderResource extends Resource
                                     $success = true;
                                 }
                             } catch (\Exception $e) {
+                                Log::error("Provisioning Exception for order {$order->id}: " . $e->getMessage() . "\nStack Trace:\n" . $e->getTraceAsString());
                                 Notification::make()->title('خطا')->body($e->getMessage())->danger()->send();
                                 return;
                             }
 
-                            // --- پایان ---
+                                    // --- پایان ---
+                                    if ($success) {
+                                        Log::info("Service provisioned successfully for order {$order->id}");
+                                        // ادامه لاجیک...
+                                    } else {
+                                        Log::error("Provisioning failed for order {$order->id}");
+                                        Notification::make()->title('خطا در ایجاد سرویس')->body('عملیات ناموفق بود.')->danger()->send();
+                                        return;
+                                    }
                             if ($success) {
                                 $dataToUpdate = [
                                     'config_details' => $finalConfig,
