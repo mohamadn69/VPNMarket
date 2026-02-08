@@ -1469,14 +1469,18 @@ class WebhookController extends Controller
                     Keyboard::inlineButton(['text' => '⬅️ بازگشت به لیست سرویس‌ها', 'callback_data' => '/my_services'])
                 ]);
 
-            // ✅ ارسال عکس با InputFile
+            // ✅ ارسال عکس با InputFile (Premium Look)
+            $photoCaption = "🔑 *📱 QR Code اشتراک #{$order->id}*\n\n";
+            $photoCaption .= "👤 *نام کاربری:* `{$order->panel_username}`\n";
+            $photoCaption .= "🔗 *لینک اشتراک:*\n";
+            $photoCaption .= "`{$configLink}`\n\n";
+            $photoCaption .= "👆🏻 " . $this->escape("برای کپی سریع روی لینک بالا بزنید!") . "\n\n";
+            $photoCaption .= $this->escape("⚠️ این کد را در اپلیکیشن خود اسکن یا لینک را وارد کنید.");
+
             Telegram::sendPhoto([
                 'chat_id' => $user->telegram_chat_id,
                 'photo' => InputFile::create($tempFile, "qr_code_{$order->id}.png"),
-                'caption' => $this->escape("📱 QR Code برای سرویس #{$order->id}\n\n" .
-                    "👤 نام کاربری: `{$order->panel_username}`\n" .
-                    "🔗 لینک: {$configLink}\n\n" .
-                    "⚠️ برای کپی روی لینک بالا کلیک کنید."),
+                'caption' => $photoCaption,
                 'parse_mode' => 'MarkdownV2',
                 'reply_markup' => $keyboard
             ]);
@@ -1596,31 +1600,46 @@ class WebhookController extends Controller
             $remainingText = "*" . $this->escape($daysRemaining . ' روز') . "* باقی‌مانده";
         }
 
-        $message = "🔍 جزئیات سرویس #{$order->id}\n\n";
-        $message .= "{$statusIcon} سرویس: " . $this->escape($order->plan->name) . "\n";
-        $message .= "👤 نام کاربری: `" . $panelUsername . "`\n";
-        $message .= "🗓 انقضا: " . $this->escape($expiresAt->format('Y/m/d')) . " - " . $remainingText . "\n";
-        $message .= "📦  حجم:  " . $this->escape($order->plan->volume_gb . ' گیگابایت') . "\n";
+        $locationFlag = '🏳️';
+        $locationName = 'نامشخص';
+        if ($order->plan && $this->settings->get('panel_type') === 'pasargad') {
+            $locationFlag = '🦅';
+            $locationName = 'سرویس Eagle';
+        }
+
+        $message = "🔍 *جزئیات اشتراک #{$order->id}*\n";
+        $message .= "━━━━━━━━━━━━━━━\n\n";
+        $message .= "💎 *سرویس:* " . $this->escape($order->plan->name) . "\n";
+        $message .= "🌍 *موقعیت:* {$locationFlag} " . $this->escape($locationName) . "\n";
+        $message .= "👤 *نام کاربری:* `" . $panelUsername . "`\n";
+        $message .= "🗓 *انقضا:* " . $this->escape($expiresAt->format('Y/m/d')) . "\n";
+        $message .= "⏱ *وضعیت:* " . $remainingText . "\n";
+        $message .= "📦 *حجم کل:* " . $this->escape($order->plan->volume_gb . ' گیگابایت') . "\n\n";
+        
         if (!empty($order->config_details)) {
-            $message .= "\n🔗 *لینک اتصال:*\n" . $order->config_details;
+            $message .= "🔗 *لینک اشتراک اختصاصی:*\n";
+            $message .= "`" . $order->config_details . "`\n\n";
+            $message .= "👆🏻 " . $this->escape("برای کپی سریع روی لینک بالا بزنید!") . "\n";
         } else {
-            $message .= "\n⏳ *در حال آماده‌سازی کانفیگ...*";
+            $message .= "⏳ " . $this->escape("در حال آماده‌سازی کانفیگ...");
         }
 
         $keyboard = Keyboard::make()->inline();
 
         if (!empty($order->config_details)) {
             $keyboard->row([
-                Keyboard::inlineButton(['text' => "📱 دریافت QR Code", 'callback_data' => "qrcode_order_{$order->id}"])
+                Keyboard::inlineButton(['text' => "📱 دریافت QR Code", 'callback_data' => "qrcode_order_{$order->id}"]),
+                Keyboard::inlineButton(['text' => "📋 کپی لینک", 'callback_data' => "copy_link_{$order->id}"])
             ]);
         }
 
         $keyboard->row([
-            Keyboard::inlineButton(['text' => "🔄 تمدید سرویس", 'callback_data' => "renew_order_{$order->id}"])
+            Keyboard::inlineButton(['text' => "🔄 تمدید اشتراک", 'callback_data' => "renew_order_{$order->id}"])
         ]);
 
         $keyboard->row([
-            Keyboard::inlineButton(['text' => '⬅️ بازگشت به لیست سرویس‌ها', 'callback_data' => '/my_services'])
+            Keyboard::inlineButton(['text' => '⬅️ بازگشت به لیست سرویس‌ها', 'callback_data' => '/my_services']),
+            Keyboard::inlineButton(['text' => '🏠 منوی اصلی', 'callback_data' => '/start'])
         ]);
 
         $this->sendOrEditMessage($user->telegram_chat_id, $message, $keyboard, $messageId);
