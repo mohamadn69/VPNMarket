@@ -110,8 +110,17 @@ class PasargadService
                 // اگر API خودش subscription_url برگردونده، فقط پورت رو از اون حذف کن
                 if (!empty($result['subscription_url'])) {
                     $apiSubUrl = $result['subscription_url'];
-                    // حذف پورت از لینک API (مثل :8000)
-                    $result['subscription_url'] = preg_replace('/:\d+\//', '/', $apiSubUrl);
+                    
+                    // Parse کردن URL و حذف پورت
+                    $parsed = parse_url($apiSubUrl);
+                    $scheme = $parsed['scheme'] ?? 'https';
+                    $host = $parsed['host'] ?? '';
+                    $path = $parsed['path'] ?? '';
+                    $query = isset($parsed['query']) ? '?' . $parsed['query'] : '';
+                    
+                    // بازسازی URL بدون پورت
+                    $result['subscription_url'] = "{$scheme}://{$host}{$path}{$query}";
+                    
                     Log::info('Pasargad: Used API subscription_url and cleaned port', [
                         'original' => $apiSubUrl,
                         'cleaned' => $result['subscription_url']
