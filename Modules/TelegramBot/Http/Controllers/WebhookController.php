@@ -826,12 +826,17 @@ class WebhookController extends Controller
                         $adminMessage .= "*نوع سفارش:* " . $this->escape($orderType) . "\n\n";
                         $adminMessage .= $this->escape("لطفا در پنل مدیریت بررسی و تایید کنید.");
 
-                        Telegram::sendPhoto([
-                            'chat_id' => $adminChatId,
-                            'photo' => InputFile::create(Storage::disk('public')->path($fileName)),
-                            'caption' => $adminMessage,
-                            'parse_mode' => 'MarkdownV2'
-                        ]);
+                        try {
+                            Telegram::sendPhoto([
+                                'chat_id' => $adminChatId,
+                                'photo' => InputFile::create(Storage::disk('public')->path($fileName)),
+                                'caption' => $adminMessage,
+                                'parse_mode' => 'MarkdownV2'
+                            ]);
+                        } catch (\Exception $e) {
+                             Log::error("Failed to send receipt to admin: " . $e->getMessage());
+                             // Silent failure for admin notification, user flow should continue
+                        }
                     }
 
                 } catch (\Exception $e) {
