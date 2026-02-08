@@ -12,15 +12,22 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('orders', function (Blueprint $table) {
-            // اضافه کردن ستون server_id برای پشتیبانی از MultiServer
-            $table->unsignedBigInteger('server_id')->nullable()->after('plan_id');
+            // اضافه کردن ستون server_id برای پشتیبانی از MultiServer (فقط اگر از قبل وجود نداشته باشد)
+            if (!Schema::hasColumn('orders', 'server_id')) {
+                $table->unsignedBigInteger('server_id')->nullable()->after('plan_id');
+            }
             
             // اگر جدول ms_servers وجود دارد، foreign key اضافه کن
             if (Schema::hasTable('ms_servers')) {
-                $table->foreign('server_id')
-                    ->references('id')
-                    ->on('ms_servers')
-                    ->onDelete('set null');
+                // بررسی کنیم که آیا کلید خارجی از قبل وجود دارد یا خیر (در لاراول ۶ به بالا کمی دشوار است، ساده‌ترین راه try-catch است یا نادیده گرفتن)
+                try {
+                    $table->foreign('server_id')
+                        ->references('id')
+                        ->on('ms_servers')
+                        ->onDelete('set null');
+                } catch (\Exception $e) {
+                    // احتمالا کلید خارجی از قبل وجود دارد یا مشکلی در ایجاد آن است
+                }
             }
         });
     }

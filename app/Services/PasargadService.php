@@ -21,10 +21,11 @@ class PasargadService
 
     public function __construct(string $baseUrl, string $username, string $password, ?string $nodeHostname = null)
     {
-        $this->baseUrl = rtrim($baseUrl, '/');
-        $this->username = $username;
-        $this->password = $password;
-        $this->nodeHostname = $nodeHostname;
+        // پاکسازی آدرس از کوتیشن‌ها و فاصله‌های احتمالی و اسلش انتها
+        $this->baseUrl = rtrim(trim($baseUrl, " '\"\t\n\r\0\x0B"), '/');
+        $this->username = trim($username);
+        $this->password = trim($password);
+        $this->nodeHostname = $nodeHostname ? trim($nodeHostname) : null;
     }
 
     /**
