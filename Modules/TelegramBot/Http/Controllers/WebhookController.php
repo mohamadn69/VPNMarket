@@ -126,12 +126,17 @@ class WebhookController extends Controller
             $this->settings = Setting::all()->pluck('value', 'key');
             $botToken = $this->settings->get('telegram_bot_token');
 
-            // Fallback to config if DB setting is missing
-            if (!$botToken) {
-                $botToken = config('telegrambot.bot_token');
-                file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - Token not in DB, fell back to config: " . ($botToken ? "FOUND" : "MISSING") . "\n", FILE_APPEND);
+            if ($botToken) {
+                // پاکسازی کوتیشن‌های احتمالی از توکن
+                $botToken = trim($botToken, '"\' ');
             }
             
+            if (!$botToken) {
+                $botToken = config('telegrambot.bot_token');
+                if ($botToken) $botToken = trim($botToken, '"\' ');
+                file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - Token not in DB, fell back to config: " . ($botToken ? "FOUND" : "MISSING") . "\n", FILE_APPEND);
+            }
+
             if (!$botToken) {
                 Log::warning('Telegram bot token is not set.');
                 file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - CRITICAL: Bot token is MISSING in both DB and Config.\n", FILE_APPEND);
