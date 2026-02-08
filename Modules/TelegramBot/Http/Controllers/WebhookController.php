@@ -1635,7 +1635,7 @@ class WebhookController extends Controller
              $locationName = 'سرویس Eagle';
         }
 
-        $message = "🔍 *جزئیات اشتراک #{$order->id}*\n";
+        $message = "🔍 *جزئیات اشتراک \\#{$order->id}*\n";
         $message .= "━━━━━━━━━━━━━━━\n\n";
         $message .= "💎 *سرویس:* " . $this->escape($order->plan->name) . "\n";
         $message .= "🌍 *موقعیت:* {$locationFlag} " . $this->escape($locationName) . "\n";
