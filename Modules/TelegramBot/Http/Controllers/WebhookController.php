@@ -118,9 +118,6 @@ class WebhookController extends Controller
 
     public function handle(Request $request)
     {
-        // Debug Logging
-        file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - Unresponsiveness Check: Webhook Received from " . $request->ip() . "\n", FILE_APPEND);
-
         Log::info("BOT_WEBHOOK_RECEIVED", ['ip' => $request->ip()]);
         try {
             $this->settings = Setting::all()->pluck('value', 'key');
@@ -134,12 +131,10 @@ class WebhookController extends Controller
             if (!$botToken) {
                 $botToken = config('telegrambot.bot_token');
                 if ($botToken) $botToken = trim($botToken, '"\' ');
-                file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - Token not in DB, fell back to config: " . ($botToken ? "FOUND" : "MISSING") . "\n", FILE_APPEND);
             }
 
             if (!$botToken) {
                 Log::warning('Telegram bot token is not set.');
-                file_put_contents(storage_path('logs/bot_debug.log'), date('Y-m-d H:i:s') . " - CRITICAL: Bot token is MISSING in both DB and Config.\n", FILE_APPEND);
                 return response('ok', 200);
             }
 
@@ -819,7 +814,7 @@ class WebhookController extends Controller
                         'text' => $this->escape("✅ رسید شما با موفقیت ثبت شد. پس از بررسی توسط ادمین، نتیجه به شما اطلاع داده خواهد شد."),
                         'parse_mode' => 'MarkdownV2',
                     ]);
-                    $this->sendOrEditMainMenu($chatId, "چه کار دیگری برایتان انجام دهم?");
+                    $this->sendOrEditMainMenu($chatId, $this->escape("چه کار دیگری برایتان انجام دهم?"));
 
                     $adminChatId = $this->settings->get('telegram_admin_chat_id');
                     if ($adminChatId) {
@@ -842,11 +837,11 @@ class WebhookController extends Controller
                 } catch (\Exception $e) {
                     Log::error("Receipt processing failed for order {$orderId}: " . $e->getMessage(), ['trace' => $e->getTraceAsString()]);
                     Telegram::sendMessage(['chat_id' => $chatId, 'text' => $this->escape("❌ خطا در پردازش رسید. لطفاً دوباره تلاش کنید."), 'parse_mode' => 'MarkdownV2']);
-                    $this->sendOrEditMainMenu($chatId, "لطفا دوباره تلاش کنید.");
+                    $this->sendOrEditMainMenu($chatId, $this->escape("لطفا دوباره تلاش کنید."));
                 }
             } else {
                 Telegram::sendMessage(['chat_id' => $chatId, 'text' => $this->escape("❌ سفارش نامعتبر است یا در انتظار پرداخت نیست."), 'parse_mode' => 'MarkdownV2']);
-                $this->sendOrEditMainMenu($chatId, "لطفا وضعیت سفارش خود را بررسی کنید.");
+                $this->sendOrEditMainMenu($chatId, $this->escape("لطفا وضعیت سفارش خود را بررسی کنید."));
             }
         }
     }
@@ -3077,18 +3072,46 @@ class WebhookController extends Controller
         if(!$photo) return null;
 
         $botToken = $this->settings->get('telegram_bot_token');
+        if (!$botToken) $botToken = config('telegrambot.bot_token');
+        $botToken = trim($botToken, '"\' ');
+
         try {
             $file = Telegram::getFile(['file_id' => $photo->getFileId()]);
-            $filePath = method_exists($file, 'getFilePath') ? $file->getFilePath() : ($file['file_path'] ?? null);
+            // Handle both array and object responses from Telegram SDK
+            if (is_array($file)) {
+                $filePath = $file['file_path'] ?? null;
+            } else {
+                $filePath = method_exists($file, 'getFilePath') ? $file->getFilePath() : ($file['file_path'] ?? null);
+            }
+            
             if(!$filePath) { throw new \Exception('File path not found in Telegram response.'); }
 
-            // ✅ اصلاح: حذف space های اضافی
-            $fileContents = file_get_contents("https://api.telegram.org/file/bot{$botToken}/{$filePath}");
-            if ($fileContents === false) { throw new \Exception('Failed to download file content.');}
+            $url = "https://api.telegram.org/file/bot{$botToken}/{$filePath}";
+            
+            // Use stream context for better error handling
+            $opts = [
+                "http" => [
+                    "method" => "GET",
+                    "header" => "User-Agent: VPNMarketBot/1.0\r\n"
+                ]
+            ];
+            $context = stream_context_create($opts);
+            $fileContents = file_get_contents($url, false, $context);
+            
+            if ($fileContents === false) { 
+                $error = error_get_last();
+                throw new \Exception('Failed to download file content from: ' . $url . ' - Error: ' . ($error['message'] ?? 'Unknown'));
+            }
 
-            Storage::disk('public')->makeDirectory($directory);
+            $storagePath = storage_path("app/public/{$directory}");
+            if (!is_dir($storagePath)) {
+                mkdir($storagePath, 0755, true);
+            }
+
             $extension = pathinfo($filePath, PATHINFO_EXTENSION) ?: 'jpg';
             $fileName = $directory . '/' . Str::random(40) . '.' . $extension;
+            
+            // Explicitly use public disk
             $success = Storage::disk('public')->put($fileName, $fileContents);
 
             if (!$success) { throw new \Exception('Failed to save file to storage.'); }
