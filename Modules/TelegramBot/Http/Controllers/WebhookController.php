@@ -1546,56 +1546,55 @@ class WebhookController extends Controller
             ->orderBy('expires_at', 'desc')
             ->get();
 
-        if ($orders->isEmpty()) {
-            $keyboard = Keyboard::make()->inline()->row([
-                Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
-                Keyboard::inlineButton(['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => '/start']),
-            ]);
-            $this->sendOrEditMessage($user->telegram_chat_id, "⚠️ شما هیچ سرویس فعال یا اخیراً منقضی شده‌ای ندارید.", $keyboard, $messageId);
-            return;
+    if ($orders->isEmpty()) {
+        $keyboard = Keyboard::make()->inline()->row([
+            Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
+            Keyboard::inlineButton(['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => '/start']),
+        ]);
+        $this->sendOrEditMessage($user->telegram_chat_id, $this->escape("⚠️ شما هیچ سرویس فعال یا اخیراً منقضی شده‌ای ندارید."), $keyboard, $messageId);
+        return;
+    }
+
+    $message = "🛠 *سرویس‌های شما*\n";
+    $message .= "━━━━━━━━━━━━━━━\n\n";
+    $message .= $this->escape("لطفاً یک سرویس را برای مشاهده جزئیات انتخاب کنید:") . "\n";
+
+    $keyboard = Keyboard::make()->inline();
+
+    foreach ($orders as $order) {
+        if (!$order->plan) {
+            continue;
         }
 
-        $message = "🛠 *سرویس‌های شما*\n";
-        $message .= "━━━━━━━━━━━━━━━\n\n";
-        $message .= "لطفاً یک سرویس را برای مشاهده جزئیات انتخاب کنید:";
+        $expiresAt = Carbon::parse($order->expires_at);
+        $now = now();
+        $statusIcon = '🟢';
 
-        $keyboard = Keyboard::make()->inline();
-
-        foreach ($orders as $order) {
-            if (!$order->plan) {
-                continue;
-            }
-
-            $expiresAt = Carbon::parse($order->expires_at);
-            $now = now();
-            $statusIcon = '🟢';
-
-            if ($expiresAt->isPast()) {
-                $statusIcon = '⚫️';
-            } elseif ($expiresAt->diffInDays($now) <= 7) {
-                $statusIcon = '🟡';
-            }
-
-            $username = $order->panel_username ?: "سرویس-{$order->id}";
-            // اصلاح: اسکیپ کردن نام کاربری برای نمایش صحیح
-            $safeUsername = $this->escape($username);
-            $buttonText = "{$statusIcon} {$safeUsername} (ID: #{$order->id})";
-
-            $keyboard->row([
-                Keyboard::inlineButton([
-                    'text' => $buttonText,
-                    'callback_data' => "show_service_{$order->id}"
-                ])
-            ]);
+        if ($expiresAt->isPast()) {
+            $statusIcon = '⚫️';
+        } elseif ($expiresAt->diffInDays($now) <= 7) {
+            $statusIcon = '🟡';
         }
+
+        $username = $order->panel_username ?: "سرویس-{$order->id}";
+        // دکمه‌ها متن ساده هستند و نیازی به escape ندارند
+        $buttonText = "{$statusIcon} {$username} (ID: #{$order->id})";
 
         $keyboard->row([
-            Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
-            Keyboard::inlineButton(['text' => '🏠 منوی اصلی', 'callback_data' => '/start'])
+            Keyboard::inlineButton([
+                'text' => $buttonText,
+                'callback_data' => "show_service_{$order->id}"
+            ])
         ]);
-
-        $this->sendOrEditMessage($user->telegram_chat_id, $message, $keyboard, $messageId);
     }
+
+    $keyboard->row([
+        Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
+        Keyboard::inlineButton(['text' => '🏠 منوی اصلی', 'callback_data' => '/start'])
+    ]);
+
+    $this->sendOrEditMessage($user->telegram_chat_id, $message, $keyboard, $messageId);
+}
 
     protected function showServiceDetails($user, $orderId, $messageId = null)
     {
@@ -1848,10 +1847,15 @@ class WebhookController extends Controller
 
         $message = "🎁 *دعوت از دوستان*\n";
         $message .= "━━━━━━━━━━━━━━━\n\n";
-        $message .= "با اشتراک‌گذاری لینک زیر، دوستان خود را به ربات دعوت کنید و هدیه بگیرید!\n\n";
-        $message .= "💸 با هر خرید موفق دوستانتان، *{$referrerReward} تومان* به کیف پول شما اضافه می‌شود.\n\n";
-        $message .= "🔗 *لینک دعوت شما (برای کپی لمس کنید):*\n`{$referralLink}`\n\n";
-        $message .= "👥 دعوت‌های موفق شما: *{$referralCount} نفر*";
+        $message .= $this->escape("با اشتراک‌گذاری لینک زیر، دوستان خود را به ربات دعوت کنید و هدیه بگیرید!") . "\n\n";
+        
+        $rewardText = "💸 با هر خرید موفق دوستانتان، *" . $this->escape($referrerReward . " تومان") . "* به کیف پول شما اضافه می‌شود.\n\n";
+        $message .= $rewardText;
+        
+        $message .= "🔗 *لینک دعوت شما \\(برای کپی لمس کنید\\):*\n";
+        $message .= "`" . $this->escapeCode($referralLink) . "`\n\n";
+        
+        $message .= "👥 دعوت‌های موفق شما: *" . $this->escape($referralCount . " نفر") . "*";
 
         $keyboard = Keyboard::make()->inline()->row([
             Keyboard::inlineButton(['text' => '🏠 منوی اصلی', 'callback_data' => '/start'])
@@ -2748,9 +2752,9 @@ class WebhookController extends Controller
         $message = "💬 *مرکز پشتیبانی*\n";
         $message .= "━━━━━━━━━━━━━━━\n\n";
         if ($tickets->isEmpty()) {
-            $message .= "شما تاکنون هیچ تیکتی ثبت نکرده‌اید.";
+            $message .= $this->escape("شما تاکنون هیچ تیکتی ثبت نکرده‌اید.");
         } else {
-            $message .= "لیست تیکت‌های اخیر شما:\n";
+            $message .= $this->escape("لیست تیکت‌های اخیر شما:") . "\n";
             foreach ($tickets as $ticket) {
                 $status = match ($ticket->status) {
                     'open' => '🔵 باز',
@@ -2758,7 +2762,7 @@ class WebhookController extends Controller
                     'closed' => '⚪️ بسته',
                     default => '⚪️ نامشخص',
                 };
-                $ticketIdEscaped = $this->escape((string)$ticket->id);
+                $ticketIdEscaped = $ticket->id;
                 $message .= "\n📌 *تیکت \\#{$ticketIdEscaped}* | " . $this->escape($status) . "\n";
                 $message .= "*موضوع:* " . $this->escape($ticket->subject) . "\n";
                 $message .= "_{$this->escape($ticket->updated_at->diffForHumans())}_";
