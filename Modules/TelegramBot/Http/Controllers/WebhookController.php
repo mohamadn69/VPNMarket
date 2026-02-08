@@ -1539,22 +1539,49 @@ class WebhookController extends Controller
     }
     protected function sendMyServices($user, $messageId = null)
     {
-        $orders = $user->orders()->where('status', 'paid')->get();
-        Log::info("Simplified Query Found: " . $orders->count());
+        // فقط سفارش‌هایی که plan_id دارند را بگیر
+        $orders = $user->orders()
+            ->where('status', 'paid')
+            ->whereNotNull('plan_id')
+            ->with('plan')
+            ->get();
+        
+        Log::info("SERVICES_QUERY", [
+            'user_id' => $user->id,
+            'total_paid_orders' => $user->orders()->where('status', 'paid')->count(),
+            'orders_with_plan' => $orders->count(),
+            'order_ids' => $orders->pluck('id')->toArray(),
+            'plan_ids' => $orders->pluck('plan_id')->toArray()
+        ]);
 
-        $allPaid = $user->orders()->where('status', 'paid')->count();
-        $withPlan = $user->orders()->where('status', 'paid')->whereNotNull('plan_id')->count();
-        $notRenewals = $user->orders()->where('status', 'paid')->whereNotNull('plan_id')->whereNull('renews_order_id')->count();
-        $notExpired = $user->orders()->where('status', 'paid')->whereNotNull('plan_id')->whereNull('renews_order_id')->where('expires_at', '>', now()->subDays(30))->count();
-
-        Log::info("DEBUG SERVICES for User {$user->id}: All Paid: $allPaid, With Plan: $withPlan, Not Renewals: $notRenewals, Not Expired (Final): $notExpired");
+        // لاگ دیباگ برای بررسی orders بدون plan
+        $ordersWithoutPlan = $user->orders()
+            ->where('status', 'paid')
+            ->whereNull('plan_id')
+            ->get();
+        
+        if ($ordersWithoutPlan->isNotEmpty()) {
+            Log::warning("ORDERS_WITHOUT_PLAN", [
+                'user_id' => $user->id,
+                'count' => $ordersWithoutPlan->count(),
+                'order_ids' => $ordersWithoutPlan->pluck('id')->toArray(),
+                'details' => $ordersWithoutPlan->map(function($o) {
+                    return [
+                        'id' => $o->id,
+                        'amount' => $o->amount,
+                        'created_at' => $o->created_at,
+                        'panel_username' => $o->panel_username
+                    ];
+                })->toArray()
+            ]);
+        }
 
         if ($orders->isEmpty()) {
             $keyboard = Keyboard::make()->inline()->row([
                 Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
                 Keyboard::inlineButton(['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => '/start']),
             ]);
-            $this->sendOrEditMessage($user->telegram_chat_id, $this->escape("⚠️ شما هیچ سرویس فعال یا اخیراً منقضی شده‌ای ندارید."), $keyboard, $messageId);
+            $this->sendOrEditMessage($user->telegram_chat_id, $this->escape("⚠️ شما هیچ سرویس فعالی ندارید."), $keyboard, $messageId);
             return;
         }
 
@@ -1563,12 +1590,19 @@ class WebhookController extends Controller
     $message .= $this->escape("لطفاً یک سرویس را برای مشاهده جزئیات انتخاب کنید:") . "\n";
 
     $keyboard = Keyboard::make()->inline();
+    $validServicesCount = 0;
 
     foreach ($orders as $order) {
+        // چون با whereNotNull و with گرفتیم، همه باید plan داشته باشند
         if (!$order->plan) {
+            Log::error("SERVICE_MISSING_PLAN", [
+                'order_id' => $order->id,
+                'plan_id' => $order->plan_id
+            ]);
             continue;
         }
 
+        $validServicesCount++;
         $expiresAt = Carbon::parse($order->expires_at);
         $now = now();
         $statusIcon = '🟢';
@@ -1580,7 +1614,6 @@ class WebhookController extends Controller
         }
 
         $username = $order->panel_username ?: "سرویس-{$order->id}";
-        // دکمه‌ها متن ساده هستند و نیازی به escape ندارند
         $buttonText = "{$statusIcon} {$username} (ID: #{$order->id})";
 
         $keyboard->row([
@@ -1590,6 +1623,11 @@ class WebhookController extends Controller
             ])
         ]);
     }
+
+    Log::info("SERVICES_DISPLAYED", [
+        'user_id' => $user->id,
+        'valid_services' => $validServicesCount
+    ]);
 
     $keyboard->row([
         Keyboard::inlineButton(['text' => '🛒 خرید سرویس جدید', 'callback_data' => '/plans']),
