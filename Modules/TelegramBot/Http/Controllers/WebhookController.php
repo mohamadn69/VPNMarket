@@ -300,7 +300,8 @@ class WebhookController extends Controller
         } elseif ($text === '📚 راهنمای اتصال') {
             $this->sendTutorialsMenu($chatId);
         } elseif ($text === '🧪 اکانت تست') {
-            $this->handleTrialRequest($user);
+            $telegramUsername = $message->getFrom()->getUsername();
+            $this->handleTrialRequest($user, $telegramUsername);
         } elseif ($text === '/start') {
             Log::info("HTM_HANDLING_START_COMMAND");
             $telegramSettings = TelegramBotSetting::pluck('value', 'key');
@@ -583,6 +584,11 @@ class WebhookController extends Controller
             }
 
             $this->promptForUsername($user, $planId, $messageId);
+            return;
+        }
+        elseif ($data === 'trial_request') {
+            $telegramUsername = $callbackQuery->getFrom()->getUsername();
+            $this->handleTrialRequest($user, $telegramUsername);
             return;
         }
         elseif (Str::startsWith($data, 'pay_wallet_')) {
@@ -2944,7 +2950,7 @@ class WebhookController extends Controller
         $this->sendOrEditMessage($user->telegram_chat_id, $message, $keyboard, $messageId);
     }
 
-    protected function handleTrialRequest($user)
+    protected function handleTrialRequest($user, $extraUsername = null)
     {
         $settings = $this->settings;
         $chatId = $user->telegram_chat_id;
@@ -2980,12 +2986,16 @@ class WebhookController extends Controller
             $volumeMB = (int) $settings->get('trial_volume_mb', 500);
             $durationHours = (int) $settings->get('trial_duration_hours', 24);
 
-            // ایجاد یوزرنیم بر اساس ایدی تلگرام برای حرفه‌ای‌تر شدن
-            $telegramId = $user->telegram_chat_id;
-            $uniqueUsername = "trial_" . $telegramId;
+            // ایجاد یوزرنیم: اولویت با یوزرنیم تلگرام، وگرنه آیدی عددی
+            $usernameBase = !empty($extraUsername) ? $extraUsername : $user->telegram_chat_id;
             
-            // اگر قبلاً تستی گرفته بود، یک پسوند اضافه کن
-            if ($currentTrials > 0) {
+            // تمیز کردن یوزرنیم (حذف کاراکترهای غیرمجاز)
+            $usernameBase = preg_replace('/[^a-zA-Z0-9_]/', '', $usernameBase);
+            
+            $uniqueUsername = "trial_" . $usernameBase;
+            
+            // اگر قبلاً تستی گرفته بود یا یوزرنیم کوتاه بود، پسوند اضافه کن
+            if ($currentTrials > 0 || strlen($usernameBase) < 3) {
                 $uniqueUsername .= "_" . ($currentTrials + 1);
             }
 
@@ -3216,21 +3226,37 @@ class WebhookController extends Controller
                     $keyboard = Keyboard::make()->inline()
                         ->row([
                             Keyboard::inlineButton(['text' => '📋 لینک کپی سریع', 'callback_data' => "copy_trial_link_{$user->id}"]),
-                            Keyboard::inlineButton(['text' => '📱 QR Code', 'callback_data' => "qr_trial_{$user->id}"])
+                            Keyboard::inlineButton(['text' => '📱 QR Code مجدد', 'callback_data' => "qr_trial_{$user->id}"])
                         ])
                         ->row([
                             Keyboard::inlineButton(['text' => '🛒 خرید سرویس دائمی', 'callback_data' => '/plans']),
                             Keyboard::inlineButton(['text' => '🏠 منوی اصلی', 'callback_data' => '/start'])
                         ]);
 
-                    Telegram::sendMessage([
-                        'chat_id' => $chatId,
-                        'text' => $message,
-                        'parse_mode' => 'MarkdownV2',
-                        'reply_markup' => $keyboard
-                    ]);
+                    // تولید QR Code به صورت خودکار
+                    $qrParams = ['size' => '400x400', 'data' => $configLink, 'ecc' => 'M', 'margin' => 10, 'format' => 'png'];
+                    $qrUrl = "https://api.qrserver.com/v1/create-qr-code/?" . http_build_query($qrParams);
+                    
+                    // ارسال به صورت Photo با کپشن
+                    try {
+                        Telegram::sendPhoto([
+                            'chat_id' => $chatId,
+                            'photo' => $qrUrl,
+                            'caption' => $message,
+                            'parse_mode' => 'MarkdownV2',
+                            'reply_markup' => $keyboard
+                        ]);
+                    } catch (\Exception $qrEx) {
+                        // اگر ارسال عکس شکست، حداقل متن را بفرست
+                        Telegram::sendMessage([
+                            'chat_id' => $chatId,
+                            'text' => $message,
+                            'parse_mode' => 'MarkdownV2',
+                            'reply_markup' => $keyboard
+                        ]);
+                    }
 
-                    Log::info('Trial account created successfully', ['user_id' => $user->id, 'username' => $uniqueUsername]);
+                    Log::info('Trial account created successfully with QR', ['user_id' => $user->id, 'username' => $uniqueUsername]);
             }
         } catch (\Exception $e) {
             Log::error('Trial Account Creation Failed', [
