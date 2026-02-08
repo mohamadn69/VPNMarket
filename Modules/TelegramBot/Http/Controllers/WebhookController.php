@@ -1575,7 +1575,9 @@ class WebhookController extends Controller
             }
 
             $username = $order->panel_username ?: "سرویس-{$order->id}";
-            $buttonText = "{$statusIcon} {$username} (ID: #{$order->id})";
+            // اصلاح: اسکیپ کردن نام کاربری برای نمایش صحیح
+            $safeUsername = $this->escape($username);
+            $buttonText = "{$statusIcon} {$safeUsername} (ID: #{$order->id})";
 
             $keyboard->row([
                 Keyboard::inlineButton([
@@ -1626,23 +1628,26 @@ class WebhookController extends Controller
 
         $locationFlag = '🏳️';
         $locationName = 'نامشخص';
-        if ($order->plan && $this->settings->get('panel_type') === 'pasargad') {
-            $locationFlag = '🦅';
-            $locationName = 'سرویس Eagle';
+        // بهبود تشخیص لوکیشن
+        $panelType = $this->settings->get('panel_type');
+        if ($order->plan && ($panelType === 'pasargad' || !$panelType)) {
+             $locationFlag = '🦅';
+             $locationName = 'سرویس Eagle';
         }
 
         $message = "🔍 *جزئیات اشتراک #{$order->id}*\n";
         $message .= "━━━━━━━━━━━━━━━\n\n";
         $message .= "💎 *سرویس:* " . $this->escape($order->plan->name) . "\n";
         $message .= "🌍 *موقعیت:* {$locationFlag} " . $this->escape($locationName) . "\n";
-        $message .= "👤 *نام کاربری:* `" . $panelUsername . "`\n";
+        $message .= "👤 *نام کاربری:* `" . $this->escapeCode($panelUsername) . "`\n";
         $message .= "🗓 *انقضا:* " . $this->escape($expiresAt->format('Y/m/d')) . "\n";
         $message .= "⏱ *وضعیت:* " . $remainingText . "\n";
         $message .= "📦 *حجم کل:* " . $this->escape($order->plan->volume_gb . ' گیگابایت') . "\n\n";
         
         if (!empty($order->config_details)) {
             $message .= "🔗 *لینک اشتراک اختصاصی:*\n";
-            $message .= "`" . $order->config_details . "`\n\n";
+            // اصلاح: استفاده از escapeCode برای محتوای داخل کد بلاک
+            $message .= "`" . $this->escapeCode($order->config_details) . "`\n\n";
             $message .= "👆🏻 " . $this->escape("برای کپی سریع روی لینک بالا بزنید!") . "\n";
         } else {
             $message .= "⏳ " . $this->escape("در حال آماده‌سازی کانفیگ...");
@@ -1674,7 +1679,7 @@ class WebhookController extends Controller
         $balance = number_format($user->balance ?? 0);
         $message = "💰 *کیف پول شما*\n";
         $message .= "━━━━━━━━━━━━━━━\n\n";
-        $message .= "💵 موجودی فعلی: *{$balance} تومان*\n\n";
+        $message .= "💵 موجودی فعلی: *" . $this->escape($balance . ' تومان') . "*\n\n";
         $message .= "می‌توانید حساب خود را شارژ کنید یا تاریخچه تراکنش‌ها را مشاهده نمایید:";
 
         $keyboard = Keyboard::make()->inline()
@@ -3288,7 +3293,7 @@ class WebhookController extends Controller
     {
         $payload = [
             'chat_id'      => $chatId,
-            'text'         => $this->escape($text),
+            'text'         => $text, // اصلاح: حذف اسکیپ خودکار برای حفظ فرمت مارک‌داون
             'parse_mode'   => 'MarkdownV2',
             'reply_markup' => $keyboard
         ];
@@ -3326,8 +3331,14 @@ class WebhookController extends Controller
     protected function escape(string $text): string
     {
         $chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!'];
+        // اول بک‌اسلش را اسکیپ می‌کنیم تا تداخل پیش نیاید
         $text = str_replace('\\', '\\\\', $text);
         return str_replace($chars, array_map(fn($char) => '\\' . $char, $chars), $text);
+    }
+
+    protected function escapeCode(string $text): string
+    {
+        return str_replace(['\\', '`'], ['\\\\', '\\`'], $text);
     }
 
     protected function getMainMenuKeyboard(): Keyboard
