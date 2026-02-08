@@ -111,15 +111,27 @@ class PasargadService
                 if (!empty($result['subscription_url'])) {
                     $apiSubUrl = $result['subscription_url'];
                     
-                    // Parse کردن URL و حذف پورت
-                    $parsed = parse_url($apiSubUrl);
-                    $scheme = $parsed['scheme'] ?? 'https';
-                    $host = $parsed['host'] ?? '';
-                    $path = $parsed['path'] ?? '';
-                    $query = isset($parsed['query']) ? '?' . $parsed['query'] : '';
-                    
-                    // بازسازی URL بدون پورت
-                    $result['subscription_url'] = "{$scheme}://{$host}{$path}{$query}";
+                    // چک کنیم که آیا لینک کامل است (با http شروع میشه) یا فقط path
+                    if (str_starts_with($apiSubUrl, 'http')) {
+                        // لینک کامل است، فقط پورت رو حذف کن
+                        $parsed = parse_url($apiSubUrl);
+                        $scheme = $parsed['scheme'] ?? 'https';
+                        $host = $parsed['host'] ?? '';
+                        $path = $parsed['path'] ?? '';
+                        $query = isset($parsed['query']) ? '?' . $parsed['query'] : '';
+                        
+                        $result['subscription_url'] = "{$scheme}://{$host}{$path}{$query}";
+                    } else {
+                        // فقط path است (مثل /sub/...) - باید baseUrl یا nodeHostname رو اضافه کنیم
+                        $parsed = parse_url($this->baseUrl);
+                        $scheme = $parsed['scheme'] ?? 'https';
+                        $host = $this->nodeHostname ?: ($parsed['host'] ?? '');
+                        
+                        // حذف پورت از host اگر موجود بود
+                        $host = preg_replace('/:\d+/', '', $host);
+                        
+                        $result['subscription_url'] = "{$scheme}://{$host}{$apiSubUrl}";
+                    }
                     
                     Log::info('Pasargad: Used API subscription_url and cleaned port', [
                         'original' => $apiSubUrl,
