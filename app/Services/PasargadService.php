@@ -107,8 +107,19 @@ class PasargadService
             Log::info('Pasargad Create User Response:', $result ?? ['raw' => $response->body()]);
 
             if ($response->successful() && isset($result['username'])) {
-                // ساخت لینک سابسکریپشن
-                $result['subscription_url'] = $this->generateSubscriptionLink($result['username']);
+                // اگر API خودش subscription_url برگردونده، فقط پورت رو از اون حذف کن
+                if (!empty($result['subscription_url'])) {
+                    $apiSubUrl = $result['subscription_url'];
+                    // حذف پورت از لینک API (مثل :8000)
+                    $result['subscription_url'] = preg_replace('/:\d+\//', '/', $apiSubUrl);
+                    Log::info('Pasargad: Used API subscription_url and cleaned port', [
+                        'original' => $apiSubUrl,
+                        'cleaned' => $result['subscription_url']
+                    ]);
+                } else {
+                    // در صورتی که API لینک سابسکریپشن نمی‌ده، خودمون می‌سازیم
+                    $result['subscription_url'] = $this->generateSubscriptionLink($result['username']);
+                }
             }
 
             return $result;
